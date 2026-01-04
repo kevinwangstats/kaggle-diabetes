@@ -205,3 +205,5 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+playground-series-s5e12.zip
+data/*.csv
