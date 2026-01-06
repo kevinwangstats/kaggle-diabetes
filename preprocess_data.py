@@ -10,7 +10,7 @@ from sklearn.pipeline import Pipeline
 
 logger = logging.getLogger(__name__)
 
-def get_feature_groups(df, target_col, id_col='id', unique_threshold=10):
+def get_feature_groups(df, target_col, id_col, unique_threshold=10):
     """
     Identifies column groups for preprocessing.
     
