@@ -57,21 +57,22 @@ def train_and_evaluate(df, target_col, id_col):
     # LightGBM Pipeline
     pipeline = Pipeline([
         ('preprocessor', preprocessor),
-        ('model', lgb.LGBMClassifier(random_state=42, verbose=-1))
+        ('model', lgb.LGBMClassifier(random_state=42, verbose=-1, n_jobs=1))
     ])
     
     # 4. Hyperparameter Tuning
     logger.info("Starting Hyperparameter Tuning with RandomizedSearchCV (5-Fold CV)...")
     
     param_dist = {
-        'model__n_estimators': [100, 200, 500],
-        'model__learning_rate': [0.01, 0.05, 0.1, 0.2],
-        'model__num_leaves': [31, 63, 127],
-        'model__max_depth': [-1, 10, 20],
-        'model__subsample': [0.7, 0.8, 0.9, 1.0],
-        'model__colsample_bytree': [0.7, 0.8, 0.9, 1.0],
-        'model__reg_alpha': [0, 0.1, 1, 5],
-        'model__reg_lambda': [0, 0.1, 1, 5]
+        'model__n_estimators': [100, 200, 500, 1000, 1500],
+        'model__learning_rate': [0.005, 0.01, 0.02, 0.05, 0.1, 0.2],
+        'model__num_leaves': [15, 31, 63, 127, 255],
+        'model__max_depth': [-1, 5, 10, 15, 20, 30],
+        'model__min_child_samples': [10, 20, 30, 50, 100],
+        'model__subsample': [0.6, 0.7, 0.8, 0.9, 1.0],
+        'model__colsample_bytree': [0.6, 0.7, 0.8, 0.9, 1.0],
+        'model__reg_alpha': [0, 0.01, 0.1, 1, 5, 10],
+        'model__reg_lambda': [0, 0.01, 0.1, 1, 5, 10]
     }
     
     # Define scorers
@@ -103,15 +104,16 @@ def train_and_evaluate(df, target_col, id_col):
     random_search = RandomizedSearchCV(
         pipeline, 
         param_distributions=param_dist, 
-        n_iter=20, # 20 iterations
+        n_iter=50, 
         cv=5, 
         scoring=scoring,
-        refit='rmse', # Refit on the best RMSE score
+        refit='rmse', 
         random_state=42,
-        n_jobs=-1,
-        verbose=1
+        n_jobs=-1,      # Use all available cores
+        verbose=2       # Show detailed progress
     )
     
+    logger.info(f"Starting parallel training on {os.cpu_count()} cores...")
     random_search.fit(X_train, y_train)
     
     best_pipeline = random_search.best_estimator_
