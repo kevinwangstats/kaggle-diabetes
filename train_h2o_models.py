@@ -10,7 +10,6 @@ import h2o
 from h2o.automl import H2OAutoML
 import pandas as pd
 import numpy as np
-from sklearn.model_selection import train_test_split
 
 # Local imports
 from evaluate_probabilities import print_report
@@ -22,7 +21,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-def init_h2o():
+def start_h2o():
     """
     Initialize H2O cluster.
     """
@@ -30,7 +29,7 @@ def init_h2o():
     # nthreads=-1 autodetects all cores.
     h2o.init(nthreads=-1)
 
-def load_data_as_h2o_frame(filepath):
+def load_data(filepath):
     """
     Loads data directly into an H2O Frame.
     """
@@ -48,112 +47,134 @@ def load_data_as_h2o_frame(filepath):
         logger.error(f"Failed to load data: {e}")
         sys.exit(1)
 
-def train_and_compare_models(train_path, target_col='diagnosed_diabetes', id_col='id'):
+def preprocess_data(frame, target_col, id_col):
     """
-    Main training workflow using H2O AutoML to compare models.
+    Preprocesses data for H2O: converts target to factor, identifies predictors.
+    
+    Args:
+        frame: H2OFrame
+        target_col: str
+        id_col: str
+        
+    Returns:
+        predictors: list of strings
     """
-    # 1. Initialize H2O
-    init_h2o()
-    
-    # 2. Load Data
-    full_hf = load_data_as_h2o_frame(train_path)
-    
-    # 3. Preprocessing
     # Ensure target is a factor for classification
     logger.info(f"Converting target '{target_col}' to categorical (factor)...")
-    full_hf[target_col] = full_hf[target_col].asfactor()
+    frame[target_col] = frame[target_col].asfactor()
     
     # Identify predictors
-    predictors = [n for n in full_hf.names if n != target_col and n != id_col]
+    predictors = [n for n in frame.names if n != target_col and n != id_col]
     logger.info(f"Predictors ({len(predictors)}): {predictors}")
     
-    # 4. Split Data (Train/Test) - replicating the 80/20 split methodology
-    logger.info("Splitting data into Train (80%) and Test (Holdout) (20%)...")
-    # H2O split_frame returns a list of frames
-    train_hf, test_hf = full_hf.split_frame(ratios=[0.8], seed=42)
+    return predictors
+
+def print_top_models_per_family(aml, top_n=2):
+    """
+    Prints the top N models for each model family from the leaderboard.
+    """
+    logger.info(f"Extracting top {top_n} models per family...")
     
-    logger.info(f"Train size: {train_hf.shape[0]}, Holdout Test size: {test_hf.shape[0]}")
+    # Get leaderboard as pandas dataframe
+    lb = aml.leaderboard.as_data_frame()
     
-    # 5. Run AutoML
-    # AutoML will train GLMs, RFs, GBMs, DeepLearning, and Stacked Ensembles
-    logger.info("Running H2O AutoML to compare multiple models...")
-    # run for a max number of models or time. 
-    # Let's set max_models=20 to give a good variety similar to RandomizedGridSearch
+    # Define common families. Note: 'DRF' includes Random Forest and XRT.
+    families = [
+        'GLM', 
+        'DRF', 
+        'GBM', 
+        # 'DeepLearning', 
+        'StackedEnsemble', 
+        'XGBoost',
+        ]
+
+    print("\n" + "="*50)
+    print(f"Top {top_n} Models per Family")
+    print("="*50)
+    
+    for family in families:
+        # Filter for models belonging to the family
+        # H2O model IDs usually start with the family name
+        family_models = lb[lb['model_id'].str.contains(family, case=False, na=False)]
+        
+        if not family_models.empty:
+            print(f"\nFamily: {family}")
+            top_models = family_models.head(top_n)
+            
+            # Print details
+            for idx, row in top_models.iterrows():
+                print(f"  Rank {idx + 1} ({family}): {row['model_id']}")
+                # Assuming RMSE is the sort metric (first column after model_id usually, or check aml.sort_metric)
+                # But safer to print the columns available
+                metrics_str = ", ".join([f"{col}: {row[col]:.4f}" for col in lb.columns if col != 'model_id' and isinstance(row[col], (int, float))][:2])
+                print(f"      Metrics: {metrics_str}")
+        else:
+            # Some families might not be present (e.g. XGBoost on Mac sometimes, or if excluded)
+            pass
+
+def train_automl(train_frame, target_col, predictors, max_models=20, seed=42, project_name="diabetes_automl"):
+    """
+    Runs H2O AutoML on the training frame.
+    
+    Args:
+        train_frame: H2OFrame for training
+        target_col: str
+        predictors: list of str
+        max_models: int
+        seed: int
+        project_name: str
+        
+    Returns:
+        aml: H2OAutoML object
+    """
+    logger.info(f"Running H2O AutoML with max_models={max_models}...")
+    
     aml = H2OAutoML(
-        max_models=20, 
-        seed=42, 
-        project_name="diabetes_automl_comparison",
-        nfolds=5, # 5-fold CV within the training set
-        sort_metric="RMSE", # Optimize for RMSE to match other scripts
-        balance_classes=True # Good practice for unbalanced data, though not strictly requested
+        max_models=max_models, 
+        seed=seed, 
+        project_name=project_name,
+        nfolds=5, 
+        sort_metric="RMSE", 
+        balance_classes=True,
+        preprocessing=["target_encoding"] # Enable target encoding for high cardinality categoricals
     )
     
-    aml.train(x=predictors, y=target_col, training_frame=train_hf)
-    
-    # 6. Leaderboard
-    logger.info("AutoML Training Completed. Leaderboard:")
-    lb = aml.leaderboard
-    # Convert to pandas for display
-    lb_df = lb.as_data_frame()
-    print("\n" + lb_df.head(10).to_string() + "\n")
-    
-    # 7. Evaluate Best Model on Holdout
-    best_model = aml.leader
-    logger.info(f"Evaluating best model: {best_model.model_id} on holdout set...")
+    aml.train(x=predictors, y=target_col, training_frame=train_frame)
+    return aml
+
+def evaluate_model(model, test_frame, target_col):
+    """
+    Evaluates the model on a holdout test frame and prints report.
+    """
+    logger.info(f"Evaluating model: {model.model_id} on holdout set...")
     
     # Predict returns frame with 'predict' (class), 'p0', 'p1'...
-    preds = best_model.predict(test_hf)
+    preds = model.predict(test_frame)
     
     # Convert to numpy/pandas for compatibility with report functions
     # 'p1' is the probability of the positive class
     y_pred_proba = preds['p1'].as_data_frame().values.flatten()
-    y_test_true = test_hf[target_col].as_data_frame().values.flatten().astype(float) # convert factor back to float for metrics
+    y_test_true = test_frame[target_col].as_data_frame().values.flatten().astype(float)
     
-    # Prepare CV results from AutoML leaderboard/model object if possible, 
-    # or just report Holdout metrics. 
-    # AutoML object calculates CV metrics for the leader.
-    cv_rmse = best_model.rmse(xval=True)
-    # H2O metrics are complex objects, let's just use the scalar values available nicely
-    
-    # Create a mock cv_results dict for formatting
-    # Note: H2O gives one aggregated CV score, not per-fold array easily accessible without more calls
-    cv_results_mock = {
-        'test_rmse': np.array([- (cv_rmse**2)]), # Negating because report expects negative MSE
-        # Sensitivity/Specificity tough to get directly as scalar without digging into confusion matrices per fold
-        'test_sensitivity': np.array([0.0]), # Placeholder
-        'test_specificity': np.array([0.0])  # Placeholder
-    }
-    
-    print_report(target_col, f"H2O AutoML - {best_model.model_id}", y_test_true, y_pred_proba, cv_results=None)
-    
-    return aml, best_model
+    # We pass None for cv_results as capturing them from H2O requires extra logic not requested
+    print_report(target_col, f"H2O AutoML - {model.model_id}", y_test_true, y_pred_proba, cv_results=None)
 
-def predict_and_save(model, test_path, output_name, id_col='id'):
+def generate_predictions(model, test_frame, id_col):
     """
-    Loads test data, predicts with H2O model, and saves.
+    Generates predictions for a dataframe.
     """
-    logger.info(f"Loading test data from {test_path}...")
-    test_hf = load_data_as_h2o_frame(test_path)
-    
     logger.info(f"Generating predictions using model: {model.model_id}...")
-    preds = model.predict(test_hf)
+    preds = model.predict(test_frame)
     
     # Extract probas
     predictions = preds['p1'].as_data_frame().iloc[:, 0]
-    ids = test_hf[id_col].as_data_frame().iloc[:, 0]
+    ids = test_frame[id_col].as_data_frame().iloc[:, 0]
     
-    # Save output
     output_df = pd.DataFrame({
         id_col: ids,
         'prediction': predictions
     })
-    
-    output_dir = os.path.dirname(test_path)
-    output_path = os.path.join(output_dir, output_name)
-    
-    logger.info(f"Saving predictions to {output_path}...")
-    output_df.to_csv(output_path, index=False)
-    logger.info("Done.")
+    return output_df
 
 if __name__ == "__main__":
     # Configuration
@@ -163,12 +184,56 @@ if __name__ == "__main__":
     OUTPUT_FILENAME = "test_data_h2o_automl_output.csv"
     TARGET_COL = 'diagnosed_diabetes'
     ID_COL = 'id'
+    MAX_MODELS = 20  # Set the maximum number of models in total to compute
     
-    # 1. Train and Compare
-    aml, best_model = train_and_compare_models(TRAIN_DATA_PATH, target_col=TARGET_COL, id_col=ID_COL)
+    # 1. Initialize
+    start_h2o()
     
-    # 2. Predict
+    # 2. Load Data
+    full_hf = load_data(TRAIN_DATA_PATH)
+    
+    # 3. Preprocess
+    predictors = preprocess_data(full_hf, TARGET_COL, ID_COL)
+    
+    # 4. Split Data
+    logger.info("Splitting data into Train (80%) and Test (Holdout) (20%)...")
+    train_hf, test_hf = full_hf.split_frame(ratios=[0.8], seed=42)
+    logger.info(f"Train size: {train_hf.shape[0]}, Holdout Test size: {test_hf.shape[0]}")
+    
+    # 5. Train AutoML
+    # Use max_models to control the total number of models computed
+    aml = train_automl(train_hf, TARGET_COL, predictors, max_models=MAX_MODELS)
+    
+    # 6. Leaderboard
+    logger.info("AutoML Training Completed. Leaderboard:")
+    lb = aml.leaderboard
+    lb_df = lb.as_data_frame()
+    print("\n" + lb_df.head(10).to_string() + "\n")
+    
+    # 6.1 Print Top Models per Family
+    print_top_models_per_family(aml)
+    
+    # 7. Evaluate
+    best_model = aml.leader
+    
+    print("\n" + "="*50)
+    print(f"Best Model Found: {best_model.model_id}")
+    print("="*50)
+    best_model.show()
+    
+    evaluate_model(best_model, test_hf, TARGET_COL)
+    
+    # 8. Predict on Test Data (if exists)
     if os.path.exists(TEST_DATA_PATH):
-        predict_and_save(best_model, TEST_DATA_PATH, OUTPUT_FILENAME, id_col=ID_COL)
+        logger.info(f"Loading test data from {TEST_DATA_PATH}...")
+        test_data_hf = load_data(TEST_DATA_PATH)
+        output_df = generate_predictions(best_model, test_data_hf, ID_COL)
+        
+        output_dir = os.path.dirname(TEST_DATA_PATH)
+        output_path = os.path.join(output_dir, OUTPUT_FILENAME)
+        
+        logger.info(f"Saving predictions to {output_path}...")
+        output_df.to_csv(output_path, index=False)
+        logger.info("Done.")
     else:
         logger.warning(f"Test data not found at {TEST_DATA_PATH}")
