@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 # -------------------------------------------------------------------------
 # GCP Project ID - Assumes this variable is explicitly set or passed in. 
 # Defaults to a placeholder if not set by environment variable.
-PROJECT_ID = os.getenv("GCP_PROJECT", "project_id") 
+PROJECT_ID = "voice-387504"
 LOCATION = "us-central1" # Default region
 
 # Training configuration
@@ -27,7 +27,7 @@ TRAIN_DATA_PATH = "data/train.csv"
 TEST_DATA_PATH = "data/test.csv"
 TARGET_COLUMN = "diagnosed_diabetes"
 ID_COLUMN = "id"
-TRAIN_BUDGET_MILLI_NODE_HOURS = 100 
+TRAIN_BUDGET_MILLI_NODE_HOURS = 1000 # 1 hour 
 MODEL_DISPLAY_NAME = "diabetes_automl_model"
 OUTPUT_PREDICTION_FILE = "vertex_automl_predictions.csv"
 
@@ -117,7 +117,7 @@ def run_vertex_automl_pipeline():
         optimization_objective="minimize-log-loss", # Standard for classification probabilities, minimizes log loss
     )
 
-    logger.info(f"Starting training with budget: {TRAIN_BUDGET_MILLI_NODE_HOURS} milli-node hours (1 hour)")
+    logger.info(f"Starting training with budget: {TRAIN_BUDGET_MILLI_NODE_HOURS} milli-node hours")
     model = job.run(
         dataset=dataset,
         target_column=TARGET_COLUMN,
