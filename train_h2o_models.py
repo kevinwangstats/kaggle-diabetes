@@ -80,12 +80,12 @@ def print_top_models_per_family(aml, top_n=2):
     
     # Define common families. Note: 'DRF' includes Random Forest and XRT.
     families = [
-        'GLM', 
-        'DRF', 
+        # 'GLM', 
+        # 'DRF', 
         'GBM', 
-        # 'DeepLearning', 
+        'DeepLearning', 
         'StackedEnsemble', 
-        'XGBoost',
+        # 'XGBoost',
         ]
 
     print("\n" + "="*50)
